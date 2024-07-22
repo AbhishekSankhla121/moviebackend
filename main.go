@@ -25,7 +25,7 @@ type Movie struct{
 	Genre string `json:"genre"`
 	Year int `json:"year"`
 	Rating int `json:"rating"`
-	CreatedAt time.Time `json:"created_at" bson:"created_at"`
+	
 }
 
 // collection Schema access
@@ -87,9 +87,9 @@ func main() {
 
 		//DONE - cors
 		app.Use(cors.New(cors.Config{
-			AllowOrigins: "*", // Allow all origins
-			AllowMethods: "GET,POST,PUT,DELETE,OPTIONS", // allow methods 
-			AllowHeaders: "Origin,Authorization,Content-Type,Accept", 
+			AllowOrigins: "*", // Allow all origins for development
+			AllowMethods: "GET,POST,PUT,DELETE,OPTIONS",
+			AllowHeaders: "Origin,Authorization,Content-Type,Accept",
 		}))
 
 
@@ -98,11 +98,7 @@ func main() {
 			frontendURL = "http://localhost:3000" 
 		}
 		// please  ingnore this its my practice where i check the port and all this is up or not 
-		app.Get("/", func(c *fiber.Ctx) error {
-			c.Set("Content-Type", "text/html")
-			return c.SendString(fmt.Sprintf(`<h1>Port is Working, please check frontend <a href="%s">Click Here</a></h1>`, frontendURL))
-		});
-
+	
 		
 
 // 		1.) Create/Update Movie Detail , created - done cheked , updated - done
@@ -124,6 +120,9 @@ func main() {
 
 			//4. for delete existing movie use DELETE req 
 			app.Delete("/deletemovie/:id",deleteMovie);
+
+			//4. for find single existing movie use get req 
+			app.Get("/singlemovie/:id",getMovieByID);
 
 // ## Validation
 // -- should not have duplicate name - done
@@ -210,6 +209,11 @@ func getAllMovies(c *fiber.Ctx) error{
 	findOptions.SetLimit(int64(limit));
 	findOptions.SetSkip(int64(skip));
 
+	// Count the total number of documents that match the filter
+	totalCount, err := collection.CountDocuments(context.Background(), filter)
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": "Failed to count movies"})
+	}
 
 	 cursor,err := collection.Find(context.Background(),filter,findOptions);
 	 if err != nil {
@@ -225,8 +229,13 @@ func getAllMovies(c *fiber.Ctx) error{
 		}
 		movies = append(movies, movie);
 	 }
+
+	 totalPages := (totalCount + int64(limit) - 1) / int64(limit)
+	 
+
+	 
 	
-	return c.Status(200).JSON(fiber.Map{"success":"true","data":movies})
+	return c.Status(200).JSON(fiber.Map{"success":"true","data":movies,"totalPages":totalPages,"totalCount":totalCount})
 }
 
 
@@ -245,7 +254,7 @@ func createMovie(c *fiber.Ctx) error{
         return c.Status(400).JSON(fiber.Map{"success": false, "message": "Title is required"})
     }
     if movie.Genre == "" {
-        return c.Status(400).JSON(fiber.Map{"success": false, "message": "Genre is required"})
+        return c.Status(400).JSON(fiber.Map{"success": false, "message": "Genre is empty","error":"genre cannot be empty"})
     }
 	if movie.Rating <0 || movie.Rating > 5 {
         return c.Status(400).JSON(fiber.Map{"success": false, "message": "Invalid rating","error": "rating should be between 0 and 5"})
@@ -259,19 +268,19 @@ func createMovie(c *fiber.Ctx) error{
 	filter := bson.M{"title":movie.Title};
 	err := collection.FindOne(context.Background(),filter).Decode(&ExistMovie);
 	if err ==nil{
-		return c.Status(500).JSON(bson.M{"success":false,"message":"Movie title Already exists!"});
+		return c.Status(500).JSON(bson.M{"success":false,"message":"duplicate entry","error":"Movie Already exists!"});
 	}
 
 
 
 	// insert into Our movie collection
-	movie.CreatedAt = time.Now();
+	
 	insertResult , err := collection.InsertOne(context.Background(),movie)
 	if err != nil{
 		return c.Status(500).JSON(bson.M{"success":false,"message":"faliled to create movie","error":err.Error()});
 	}
 	movie.Id = insertResult.InsertedID.(primitive.ObjectID)
-	return c.Status(200).JSON(fiber.Map{"success":true,"data":movie});
+	return c.Status(200).JSON(fiber.Map{"success":true,"message":"update Successfully","data":movie});
 }
 
 //funxtion for updating movie
@@ -299,7 +308,7 @@ func updateMovie(c *fiber.Ctx) error{
 	}
 	
 	if count ==0{
-		return c.Status(404).JSON(fiber.Map{"success":false,"message":"Movie not found"});
+		return c.Status(404).JSON(fiber.Map{"success":false,"message":"missing item","error":"Movie not found!"});
 	}
 
 	// get the Request body
@@ -313,12 +322,12 @@ func updateMovie(c *fiber.Ctx) error{
 	filter := bson.M{"_id":bson.M{"$ne":objectId},"title":movie.Title};
 	count,err:= collection.CountDocuments(context.Background(),filter);
 	if err != nil{
-		return c.Status(500).JSON(fiber.Map{"success":false,"error":err.Error(),"message":"Error Occur in cheking for duplicate Id"});
+		return c.Status(500).JSON(fiber.Map{"success":false,"message":err.Error(),"error":"Error Occur in cheking for duplicate Id"});
 	}
 
 	//if already exist then throws error ...
 	if count > 0 {
-		return c.Status(400).JSON(fiber.Map{"success": false, "message": "Movie with this title already exists!!!"})
+		return c.Status(400).JSON(fiber.Map{"success": false, "error": "Movie with this title already exists!!!",})
 	}
 	
 	//if all passes the validations
@@ -355,7 +364,7 @@ func updateMovie(c *fiber.Ctx) error{
 	update_filter := bson.M{"$set":updated};
 	_,err = collection.UpdateByID(context.Background(),objectId,update_filter)
 	if err != nil {
-		return c.Status(500).JSON(fiber.Map{"success": false, "message": "Failed to update movie", "error": err.Error()})
+		return c.Status(500).JSON(fiber.Map{"success": false, "error": "Failed to update movie", "message": err.Error()})
 	}
 	return c.Status(200).JSON(fiber.Map{"success":true,"message":"updated successfully!!"});
 }
@@ -368,15 +377,36 @@ func deleteMovie(c *fiber.Ctx) error{
 	
 	filter := bson.M{"_id":objectId};
 	if err != nil{
-		return c.Status(400).JSON(fiber.Map{"success":false,"message": "Invalid ID","error":err.Error()})
+		return c.Status(400).JSON(fiber.Map{"success":false,"error": "Invalid ID","message":err.Error()})
 	}
 	
 	// delete document
 	_,err = collection.DeleteOne(context.Background(),filter);
 	if err != nil {
-        return c.Status(500).JSON(fiber.Map{"success":true,"message": "Error deleting data","error":err.Error()})
+        return c.Status(500).JSON(fiber.Map{"success":false,"error": "Error deleting data","message":err.Error()})
     }
 	return c.Status(200).JSON(fiber.Map{"success": true, "message":"Deleted Successfully"})
 }
 
 
+func getMovieByID(c *fiber.Ctx) error {
+	id := c.Params("id") // Get the ID from the route parameters
+
+	// Convert the id string to an ObjectID
+	objID, err := primitive.ObjectIDFromHex(id)
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "Invalid movie ID"})
+	}
+
+	var movie Movie
+	filter := bson.M{"_id": objID}
+
+	err = collection.FindOne(context.Background(), filter).Decode(&movie)
+	if err == mongo.ErrNoDocuments {
+		return c.Status(404).JSON(fiber.Map{"error": "Movie not found"})
+	} else if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": "Failed to fetch movie", "message": err.Error()})
+	}
+
+	return c.Status(200).JSON(fiber.Map{"success": "true", "data": movie})
+}
